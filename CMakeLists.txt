@@ -10,7 +10,7 @@ project(playback_furnace C CXX)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(PlaybackPlugin)
 
-find_package(ZLIB REQUIRED)
+add_subdirectory(external/zlib)
 
 # =====================================================================================
 # Furnace engine (main library)
