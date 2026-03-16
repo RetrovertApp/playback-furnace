@@ -7,5 +7,5 @@
 -int logLevel=LOGLEVEL_TRACE; // until done
 +int logLevel=LOGLEVEL_ERROR;
  #endif
-
+ 
  FILE* logOut;
