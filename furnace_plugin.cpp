@@ -55,6 +55,7 @@ struct FurnaceReplayerData {
     float* left_buf;
     float* right_buf;
     bool playing;
+    bool scope_enabled;
 };
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -374,9 +375,63 @@ static void furnace_event(void* user_data, uint8_t* event_data, uint64_t len) {
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-static uint32_t furnace_get_scope_data(void* user_data, int channel, float* buffer, uint32_t num_samples) {
+static bool furnace_get_structure(void* user_data, RVVizInfo* out) {
+    FurnaceReplayerData* data = static_cast<FurnaceReplayerData*>(user_data);
+    if (data == nullptr || data->engine == nullptr || out == nullptr) {
+        return false;
+    }
+
+    int total = data->engine->getTotalChannelCount();
+    out->caps = RVVizCaps_Scope;
+    out->scroll_mode = RVScrollMode_Synchronized;
+    out->pattern_channel_count = 0;
+    out->scope_channel_count = total > 0 ? (uint32_t)total : 0;
+    out->column_count = 0;
+    return true;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+static uint32_t furnace_get_scope_channels(void* user_data, RVChannelDesc* out, uint32_t cap) {
+    FurnaceReplayerData* data = static_cast<FurnaceReplayerData*>(user_data);
+    if (data == nullptr || data->engine == nullptr || out == nullptr)
+        return 0;
+
+    int total = data->engine->getTotalChannelCount();
+    uint32_t count = total > 0 ? (uint32_t)total : 0;
+    if (count > cap)
+        count = cap;
+    for (uint32_t i = 0; i < count; i++) {
+        const char* ch_name = data->engine->getChannelShortName(i);
+        memset(out[i].name, 0, sizeof(out[i].name));
+        if (ch_name != nullptr && ch_name[0] != '\0') {
+            snprintf(reinterpret_cast<char*>(out[i].name), sizeof(out[i].name), "%s", ch_name);
+        } else {
+            snprintf(reinterpret_cast<char*>(out[i].name), sizeof(out[i].name), "Ch %u", i + 1);
+        }
+        out[i].scope_width = 0;
+    }
+    return count;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+static void furnace_set_scope_enabled(void* user_data, bool on) {
+    FurnaceReplayerData* data = static_cast<FurnaceReplayerData*>(user_data);
+    if (data == nullptr) {
+        return;
+    }
+
+    // Furnace's engine fills per-channel osc buffers unconditionally; the flag is the
+    // host-facing off switch so the getter stays silent until explicitly enabled.
+    data->scope_enabled = on;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+static uint32_t furnace_get_scope_samples(void* user_data, int32_t channel, float* out, uint32_t cap) {
     FurnaceReplayerData* data = (FurnaceReplayerData*)user_data;
-    if (!data || !data->engine || !data->playing || !buffer) {
+    if (!data || !data->engine || !data->playing || !data->scope_enabled || !out) {
         return 0;
     }
 
@@ -391,51 +446,25 @@ static uint32_t furnace_get_scope_data(void* user_data, int channel, float* buff
     }
 
     // Read from the osc buffer (65536-entry S16 ring buffer with fixed-point needle)
-    if (num_samples > 1024) {
-        num_samples = 1024;
+    if (cap > 1024) {
+        cap = 1024;
     }
 
     unsigned short write_pos = osc->needle >> 16;
-    unsigned short read_pos = write_pos - (unsigned short)num_samples;
+    unsigned short read_pos = write_pos - (unsigned short)cap;
 
-    for (uint32_t i = 0; i < num_samples; i++) {
+    for (uint32_t i = 0; i < cap; i++) {
         short sample = osc->data[read_pos];
         // -1 (0xffff) means "no data" in Furnace's osc buffer
         if (sample == -1) {
-            buffer[i] = 0.0f;
+            out[i] = 0.0f;
         } else {
-            buffer[i] = (float)sample / 32768.0f;
+            out[i] = (float)sample / 32768.0f;
         }
         read_pos++;
     }
 
-    return num_samples;
-}
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-static uint32_t furnace_get_scope_channel_names(void* user_data, const char** names, uint32_t max_channels) {
-    FurnaceReplayerData* data = static_cast<FurnaceReplayerData*>(user_data);
-    if (data == nullptr || data->engine == nullptr)
-        return 0;
-
-    static char s_name_bufs[64][16];
-    int total = data->engine->getTotalChannelCount();
-    uint32_t count = total > 0 ? (uint32_t)total : 0;
-    if (count > 64)
-        count = 64;
-    if (count > max_channels)
-        count = max_channels;
-    for (uint32_t i = 0; i < count; i++) {
-        const char* ch_name = data->engine->getChannelShortName(i);
-        if (ch_name != nullptr && ch_name[0] != '\0') {
-            snprintf(s_name_bufs[i], sizeof(s_name_bufs[i]), "%s", ch_name);
-        } else {
-            snprintf(s_name_bufs[i], sizeof(s_name_bufs[i]), "Ch %u", i + 1);
-        }
-        names[i] = s_name_bufs[i];
-    }
-    return count;
+    return cap;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -457,12 +486,19 @@ static RVPlaybackPlugin g_furnace_plugin = {
     furnace_metadata,
     furnace_static_init,
     nullptr, // settings_updated
-    nullptr, // get_tracker_info
-    nullptr, // get_pattern_cell
-    nullptr, // get_pattern_num_rows
-    furnace_get_scope_data,
     nullptr, // static_destroy
-    furnace_get_scope_channel_names,
+
+    // Visualization: scope-only (per-channel osc buffers, no pattern grid).
+    furnace_get_structure,
+    nullptr, // get_columns
+    nullptr, // get_pattern_channels
+    furnace_get_scope_channels,
+    nullptr, // get_position
+    nullptr, // get_channel_rows
+    nullptr, // get_cells
+    furnace_set_scope_enabled,
+    furnace_get_scope_samples,
+    nullptr, // get_vu
 };
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
